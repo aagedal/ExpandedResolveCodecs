@@ -473,12 +473,19 @@ X264Encoder::X264Encoder()
     , m_ColorModel(-1)
     , m_IsMultiPass(false)
     , m_PassesDone(0)
+    , m_InputFrames(0)
+    , m_OutputFrames(0)
+    , m_AcceptQueries(0)
     , m_Error(errNone)
 {
 }
 
 X264Encoder::~X264Encoder()
 {
+    g_Log(logLevelInfo, "X264 Plugin :: Close: %llu acceptance queries, %llu input frames, %llu output frames, error %d",
+          static_cast<unsigned long long>(m_AcceptQueries),
+          static_cast<unsigned long long>(m_InputFrames),
+          static_cast<unsigned long long>(m_OutputFrames), m_Error);
     if (m_pContext)
     {
         x264_encoder_close(m_pContext);
@@ -486,11 +493,11 @@ X264Encoder::~X264Encoder()
     }
 }
 
-void X264Encoder::DoFlush()
+StatusCode X264Encoder::DoFlush()
 {
     if (m_Error != errNone)
     {
-        return;
+        return m_Error;
     }
 
     StatusCode sts = DoProcess(NULL);
@@ -499,19 +506,29 @@ void X264Encoder::DoFlush()
         sts = DoProcess(NULL);
     }
 
+    g_Log(logLevelInfo, "X264 Plugin :: Flush pass %u: %llu input frames, %llu output frames, status %d",
+          m_PassesDone + 1, static_cast<unsigned long long>(m_InputFrames),
+          static_cast<unsigned long long>(m_OutputFrames), sts);
+    if (sts != errMoreData)
+    {
+        return sts;
+    }
+
     ++m_PassesDone;
 
     if (!m_IsMultiPass || (m_PassesDone > 1))
     {
         // no need to do anything
-        return;
+        return errNone;
     }
 
     if (m_PassesDone == 1)
     {
         // setup new pass
         SetupContext(true /* isFinalPass */);
+        return m_Error;
     }
+    return errNone;
 }
 
 StatusCode X264Encoder::DoInit(HostPropertyCollectionRef* p_pProps)
@@ -541,7 +558,20 @@ void X264Encoder::SetupContext(bool p_IsFinalPass)
     const char* pProfile = m_pSettings->GetProfile();
     m_ColorModel = (((pProfile != NULL) && (strcmp(pProfile, "high422") == 0)) ? X264_CSP_UYVY : X264_CSP_NV12);
 
-    x264_param_default_preset(&param, m_pSettings->GetEncPreset(), m_pSettings->GetTune());
+    // Resolve Studio 21.1 closes the codec after the last input frame without
+    // sending msgCodecFlush. x264 must therefore emit every frame during
+    // DoProcess. Keep the user's tune, then add x264's zero-latency settings.
+    std::string effectiveTune(m_pSettings->GetTune());
+    if (effectiveTune != "zerolatency")
+    {
+        effectiveTune.append(",zerolatency");
+    }
+    if (x264_param_default_preset(&param, m_pSettings->GetEncPreset(), effectiveTune.c_str()) != 0)
+    {
+        m_Error = errInvalidParam;
+        return;
+    }
+    g_Log(logLevelInfo, "X264 Plugin :: Effective x264 tune: %s", effectiveTune.c_str());
     param.i_csp              = m_ColorModel;
     param.i_width            = m_CommonProps.GetWidth();
     param.i_height           = m_CommonProps.GetHeight();
@@ -626,6 +656,10 @@ StatusCode X264Encoder::DoOpen(HostBufferRef* p_pBuff)
 
     m_pSettings.reset(new UISettingsController(m_CommonProps));
     m_pSettings->Load(p_pBuff);
+    g_Log(logLevelInfo, "X264 Plugin :: Open %ux%u at %u/%u fps, preset %s, tune %s",
+          m_CommonProps.GetWidth(), m_CommonProps.GetHeight(),
+          m_CommonProps.GetFrameRateNum(), m_CommonProps.GetFrameRateDen(),
+          m_pSettings->GetEncPreset(), m_pSettings->GetTune());
 
     uint8_t isMultiPass = 0;
     if (m_pSettings->GetNumPasses() == 2)
@@ -638,6 +672,7 @@ StatusCode X264Encoder::DoOpen(HostBufferRef* p_pBuff)
     StatusCode sts = p_pBuff->SetProperty(pIOPropMultiPass, propTypeUInt8, &isMultiPass, 1);
     if (sts != errNone)
     {
+        g_Log(logLevelError, "X264 Plugin :: Failed to set multipass property: %d", sts);
         return sts;
     }
 
@@ -645,12 +680,14 @@ StatusCode X264Encoder::DoOpen(HostBufferRef* p_pBuff)
     SetupContext(true /* isFinalPass */);
     if (m_Error != errNone)
     {
+        g_Log(logLevelError, "X264 Plugin :: Failed to open x264 context: %d", m_Error);
         return m_Error;
     }
 
     x264_nal_t* pNals = 0;
     int numNals = 0;
     int hdrBytes = x264_encoder_headers(m_pContext, &pNals, &numNals);
+    g_Log(logLevelInfo, "X264 Plugin :: x264 headers: %d bytes in %d NALs", hdrBytes, numNals);
     if (hdrBytes > 0)
     {
         std::vector<uint8_t> cookie;
@@ -670,9 +707,13 @@ StatusCode X264Encoder::DoOpen(HostBufferRef* p_pBuff)
 
         if (!cookie.empty())
         {
-            p_pBuff->SetProperty(pIOPropMagicCookie, propTypeUInt8, &cookie[0], cookie.size());
+            sts = p_pBuff->SetProperty(pIOPropMagicCookie, propTypeUInt8, &cookie[0], cookie.size());
+            g_Log(sts == errNone ? logLevelInfo : logLevelError,
+                  "X264 Plugin :: Set header cookie (%zu bytes): %d", cookie.size(), sts);
             uint32_t fourCC = 0;
-            p_pBuff->SetProperty(pIOPropMagicCookieType, propTypeUInt32, &fourCC, 1);
+            sts = p_pBuff->SetProperty(pIOPropMagicCookieType, propTypeUInt32, &fourCC, 1);
+            g_Log(sts == errNone ? logLevelInfo : logLevelError,
+                  "X264 Plugin :: Set header cookie type: %d", sts);
         }
     }
 
@@ -688,6 +729,7 @@ StatusCode X264Encoder::DoOpen(HostBufferRef* p_pBuff)
         }
     }
 
+    g_Log(logLevelInfo, "X264 Plugin :: Open completed");
     return errNone;
 }
 
@@ -717,6 +759,11 @@ StatusCode X264Encoder::DoProcess(HostBufferRef* p_pBuff)
     }
     else
     {
+        ++m_InputFrames;
+        if (m_InputFrames == 1)
+        {
+            g_Log(logLevelInfo, "X264 Plugin :: First input frame received");
+        }
         char* pBuf = NULL;
         size_t bufSize = 0;
         if (!p_pBuff->LockBuffer(&pBuf, &bufSize))
@@ -801,6 +848,8 @@ StatusCode X264Encoder::DoProcess(HostBufferRef* p_pBuff)
 
     if (bytes < 0)
     {
+        g_Log(logLevelError, "X264 Plugin :: x264_encoder_encode failed after %llu input frames",
+              static_cast<unsigned long long>(m_InputFrames));
         return errFail;
     }
     else if (bytes == 0)
@@ -839,5 +888,22 @@ StatusCode X264Encoder::DoProcess(HostBufferRef* p_pBuff)
     uint8_t isKeyFrame = IS_X264_TYPE_I(outPic.i_type) ? 1 : 0;
     outBuf.SetProperty(pIOPropIsKeyFrame, propTypeUInt8, &isKeyFrame, 1);
 
-    return m_pCallback->SendOutput(&outBuf);
+    if (!outBuf.UnlockBuffer())
+    {
+        g_Log(logLevelError, "X264 Plugin :: Failed to unlock encoded output buffer");
+        return errFail;
+    }
+    if (!m_pCallback)
+    {
+        g_Log(logLevelError, "X264 Plugin :: Missing output callback");
+        return errInvalidOperation;
+    }
+    const StatusCode outputStatus = m_pCallback->SendOutput(&outBuf);
+    if (outputStatus != errNone)
+    {
+        g_Log(logLevelError, "X264 Plugin :: Output callback failed with status %d", outputStatus);
+        return outputStatus;
+    }
+    ++m_OutputFrames;
+    return errNone;
 }

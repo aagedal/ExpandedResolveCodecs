@@ -238,8 +238,7 @@ namespace IOPlugin
             }
             case msgCodecFlush:
             {
-                DoFlush();
-                err = errNone;
+                err = DoFlush();
                 break;
             }
             case msgCodecSetCallback:

@@ -96,7 +96,7 @@ namespace IOPlugin
         }
 
     protected:
-        virtual void DoFlush() = 0;
+        virtual StatusCode DoFlush() = 0;
         virtual StatusCode DoInit(HostPropertyCollectionRef* p_pProps) = 0;
         virtual StatusCode DoOpen(HostBufferRef* p_pBuff) = 0;
         virtual StatusCode DoProcess(HostBufferRef* p_pBuff)
