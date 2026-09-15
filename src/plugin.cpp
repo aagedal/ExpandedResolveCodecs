@@ -13,7 +13,7 @@ StatusCode g_HandleGetInfo(HostPropertyCollectionRef* p_pProps)
     StatusCode err = p_pProps->SetProperty(pIOPropUUID, propTypeUInt8, pMyUUID, 16);
     if (err == errNone)
     {
-        const char* name = "Expanded Resolve Codecs x264 PoC";
+        const char* name = "Expanded Resolve Codecs";
         err = p_pProps->SetProperty(pIOPropName, propTypeString, name, strlen(name));
     }
 

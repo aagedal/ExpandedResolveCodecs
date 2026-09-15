@@ -12,6 +12,7 @@
 const uint8_t X264Encoder::s_UUID[] = { 0x47, 0x1d, 0x14, 0x1c, 0xa2, 0x0e, 0x4f, 0x5e, 0x98, 0xa4, 0x7a, 0x05, 0x1e, 0xd7, 0x6d, 0xcb };
 
 static std::string s_TmpFileName = "/tmp/x264_multipass.log";
+static const int32_t kVideoLoopPreset = 11;
 
 class UISettingsController
 {
@@ -147,7 +148,11 @@ private:
                 ++pPresets;
             }
 
+            valuesVec.push_back(kVideoLoopPreset);
+            textsVec.push_back("VideoLoop");
+
             item.MakeComboBox("Encoder Preset", textsVec, valuesVec, m_EncPreset);
+            item.SetTriggersUpdate(true);
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
                 g_Log(logLevelError, "X264 Plugin :: Failed to populate encoder preset UI entry");
@@ -171,7 +176,8 @@ private:
                 ++pPresets;
             }
 
-            item.MakeComboBox("Tune", textsVec, valuesVec, m_Tune);
+            item.MakeComboBox("Tune", textsVec, valuesVec, IsVideoLoopPreset() ? 8 : m_Tune);
+            item.SetDisabled(IsVideoLoopPreset());
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
                 g_Log(logLevelError, "X264 Plugin :: Failed to populate tune UI entry");
@@ -197,7 +203,8 @@ private:
             textsVec.push_back("High 422");
             valuesVec.push_back(4);
 
-            item.MakeComboBox("h264 Profile", textsVec, valuesVec, m_Profile);
+            item.MakeComboBox("h264 Profile", textsVec, valuesVec, IsVideoLoopPreset() ? 2 : m_Profile);
+            item.SetDisabled(IsVideoLoopPreset());
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
                 g_Log(logLevelError, "X264 Plugin :: Failed to populate profile UI entry");
@@ -210,6 +217,10 @@ private:
 
     StatusCode RenderQuality(HostListRef* p_pSettingsList)
     {
+        const bool videoLoop = IsVideoLoopPreset();
+        const int32_t numPasses = videoLoop ? 1 : m_NumPasses;
+        const int32_t qualityMode = videoLoop ? X264_RC_CRF : m_QualityMode;
+        const int32_t factor = videoLoop ? 23 : m_QP;
         if (0)
         {
             HostUIConfigEntryRef item("x264_lbl_quality");
@@ -233,8 +244,9 @@ private:
             textsVec.push_back("2-Pass");
             valuesVec.push_back(2);
 
-            item.MakeComboBox("Passes", textsVec, valuesVec, m_NumPasses);
+            item.MakeComboBox("Passes", textsVec, valuesVec, numPasses);
             item.SetTriggersUpdate(true);
+            item.SetDisabled(videoLoop);
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
                 g_Log(logLevelError, "X264 Plugin :: Failed to populate passes UI entry");
@@ -242,7 +254,7 @@ private:
             }
         }
 
-        if (m_NumPasses < 2)
+        if (numPasses < 2)
         {
             HostUIConfigEntryRef item("x264_q_mode");
 
@@ -257,8 +269,9 @@ private:
             textsVec.push_back("Variable Rate");
             valuesVec.push_back(X264_RC_ABR);
 
-            item.MakeRadioBox("Quality Control", textsVec, valuesVec, GetQualityMode());
+            item.MakeRadioBox("Quality Control", textsVec, valuesVec, qualityMode);
             item.SetTriggersUpdate(true);
+            item.SetDisabled(videoLoop);
 
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
@@ -270,11 +283,11 @@ private:
         {
             HostUIConfigEntryRef item("x264_qp");
             const char* pLabel = NULL;
-            if (m_QP < 17)
+            if (factor < 17)
             {
                 pLabel = "(high)";
             }
-            else if (m_QP < 34)
+            else if (factor < 34)
             {
                 pLabel = "(medium)";
             }
@@ -282,9 +295,10 @@ private:
             {
                 pLabel = "(low)";
             }
-            item.MakeSlider("Factor", pLabel, m_QP, 1, 51, 25);
+            item.MakeSlider("Factor", pLabel, factor, 1, 51, 25);
             item.SetTriggersUpdate(true);
-            item.SetHidden((m_QualityMode == X264_RC_ABR) || (m_NumPasses > 1));
+            item.SetDisabled(videoLoop);
+            item.SetHidden((qualityMode == X264_RC_ABR) || (numPasses > 1));
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
                 g_Log(logLevelError, "X264 Plugin :: Failed to populate qp slider UI entry");
@@ -295,7 +309,7 @@ private:
         {
             HostUIConfigEntryRef item("x264_bitrate");
             item.MakeSlider("Bit Rate", "KBps", m_BitRate, 100, 3000, 1);
-            item.SetHidden((m_QualityMode != X264_RC_ABR) && (m_NumPasses < 2));
+            item.SetHidden((qualityMode != X264_RC_ABR) && (numPasses < 2));
 
             if (!item.IsSuccess() || !p_pSettingsList->Append(&item))
             {
@@ -310,23 +324,40 @@ private:
 public:
     int32_t GetNumPasses()
     {
-        return m_NumPasses;
+        return IsVideoLoopPreset() ? 1 : m_NumPasses;
+    }
+
+    bool IsVideoLoopPreset() const
+    {
+        return m_EncPreset == kVideoLoopPreset;
     }
 
     const char* GetEncPreset() const
     {
+        if (IsVideoLoopPreset())
+        {
+            return "veryslow";
+        }
         return (m_EncPreset >= 1 && m_EncPreset <= 10)
             ? x264_preset_names[m_EncPreset - 1] : "medium";
     }
 
     const char* GetTune() const
     {
+        if (IsVideoLoopPreset())
+        {
+            return "zerolatency";
+        }
         return (m_Tune >= 1 && m_Tune <= 8)
             ? x264_tune_names[m_Tune - 1] : "film";
     }
 
     const char* GetProfile() const
     {
+        if (IsVideoLoopPreset())
+        {
+            return "main";
+        }
         const char* pProfile = NULL;
         switch (m_Profile)
         {
@@ -350,11 +381,19 @@ public:
 
     int32_t GetQualityMode() const
     {
+        if (IsVideoLoopPreset())
+        {
+            return X264_RC_CRF;
+        }
         return (m_NumPasses == 2) ? X264_RC_ABR : m_QualityMode;
     }
 
     int32_t GetQP() const
     {
+        if (IsVideoLoopPreset())
+        {
+            return 23;
+        }
         return std::max<int>(0, m_QP);
     }
 
@@ -403,10 +442,10 @@ StatusCode X264Encoder::s_RegisterCodecs(HostListRef* p_pList)
 
     codecInfo.SetProperty(pIOPropUUID, propTypeUInt8, X264Encoder::s_UUID, 16);
 
-    const char* pCodecName = "x264 (upstream PoC)";
+    const char* pCodecName = "Software Encoder";
     codecInfo.SetProperty(pIOPropName, propTypeString, pCodecName, strlen(pCodecName));
 
-    const char* pCodecGroup = "Plugin AVC";
+    const char* pCodecGroup = "x264 H.264";
     codecInfo.SetProperty(pIOPropGroup, propTypeString, pCodecGroup, strlen(pCodecGroup));
 
     uint32_t val = 'avc1';
@@ -621,6 +660,18 @@ void X264Encoder::SetupContext(bool p_IsFinalPass)
 
         param.rc.psz_stat_out = &s_TmpFileName[0];
         param.rc.psz_stat_in = &s_TmpFileName[0];
+    }
+
+    if (m_pSettings->IsVideoLoopPreset())
+    {
+        // veryslow requests 16 references, which exceeds Level 4.0's DPB
+        // limit at 1920x1080. Keep the VideoLoop level valid for its 1080p target.
+        param.i_frame_reference = 4;
+        param.i_dpb_size = 4;
+        param.i_level_idc = 40;
+        param.rc.i_vbv_max_bitrate = 9000;
+        param.rc.i_vbv_buffer_size = 18000;
+        param.rc.f_rf_constant_max = 0;
     }
 
     if (pProfile != NULL)
