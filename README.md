@@ -16,6 +16,14 @@ To build from an existing checkout, including a specific pinned commit:
 X264_SOURCE_DIR=/absolute/path/to/x264 ./scripts/build.sh
 ```
 
+To create a macOS Installer package after building the plugin:
+
+```sh
+./scripts/package.sh
+```
+
+This creates `dist/ExpandedResolveCodecs-x264-0.2.0.pkg`. Open the package on an Apple Silicon Mac and follow the Installer prompts. It installs the plugin in Resolve's system `IOPlugins` directory. Quit and relaunch Resolve after installation. The package is unsigned by default; set `PKG_SIGNING_IDENTITY` to a Developer ID Installer identity when distributing a signed package.
+
 Install the resulting `dist/x264_encoder_plugin.dvcp.bundle` in `/Library/Application Support/Blackmagic Design/DaVinci Resolve/IOPlugins`, then restart Resolve Studio. In Deliver, choose MP4 or QuickTime, select `x264 H.264` in the Codec list, then `Software Encoder` as the Type. The default is medium and CRF 20.
 
 For VideoLoop-style output, select `VideoLoop` under Plugin Settings. It applies x264 `veryslow`, CRF 23, Main profile, Level 4.0, a 9,000 kb/s VBV maximum rate, and an 18,000 kb VBV buffer. The preset uses a single pass, four reference frames, and 8-bit 4:2:0 video. Its Level 4.0 settings are intended for up to 1920 × 1080 at 30 fps. To match the converter's video-only MP4 workflow, select MP4, turn off Export Audio in Resolve's Audio tab, and set the desired resolution and sizing in Resolve. Resolve controls the container, audio, sizing, and file metadata; this encoder preset does not apply the converter's minimum-rate option, SEI removal, bitexact output, or desqueeze filter. Resolve's Network Optimization option is separate from the encoder preset.
